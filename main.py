@@ -206,8 +206,7 @@ def main():
     # 生成符号距离场
     level_set.gen_level_set()
     level_set.bilinear_difference(pos, value)
-    print(pos)
-    print(value)
+
 
     gui = ti.GUI('Surface Tension', res=512, background_color=0x112F41)
 
