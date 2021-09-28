@@ -1,8 +1,6 @@
 import taichi as ti
 import numpy as np
 
-from level_set import LevelSet
-from differential import Differential
 
 ti.init(arch=ti.gpu)
 
@@ -10,7 +8,7 @@ PI = 3.1415926535
 
 # def diff_grid variable
 dim = 2
-diff_n_grid = 10
+diff_n_grid = 100
 max_x = 1.0
 min_x = .0
 gradient = ti.Vector.field(dim, ti.f32, shape=(diff_n_grid, diff_n_grid))
@@ -24,7 +22,7 @@ sign_distance_field = ti.field(ti.f32, shape=(diff_n_grid, diff_n_grid))
 
 # def MPM variable
 quality = 1  # Use a larger value for higher-res simulations
-n_particles, n_grid = 20000 * quality ** 2, 128 * quality
+n_particles, n_grid = 40000 * quality ** 2, 128 * quality
 dx, inv_dx = 1 / n_grid, float(n_grid)
 dt = 1e-4 / quality
 p_vol = (dx * 0.5) ** 2
@@ -32,10 +30,6 @@ E, nu = 0.1e4, 0.2  # Young's modulus and Poisson's ratio
 mu_0, lambda_0 = E / (2 * (1 + nu)), E * nu / ((1 + nu) * (1 - 2 * nu))  # Lame parameters
 E_t, nu_t = 207, 0.3  # Young's modulus and Poisson's ratio
 mu_t, lambda_t = E_t / (2 * (1 + nu_t)), E_t * nu_t / ((1 + nu_t) * (1 - 2 * nu_t))  # Lame parameters
-
-# level set test
-pos = ti.Vector.field(dim, ti.f32, shape=10)
-value = ti.field(ti.f32, shape=10)
 
 create_particle_num = ti.field(dtype=int, shape=())
 
@@ -51,6 +45,37 @@ nodes = ti.Struct.field({
     "node_v": ti.types.vector(2, ti.f32),
     "node_m": ti.f32
 }, shape=(n_grid, n_grid))
+
+_et = np.array(
+    [
+        [[-1, -1], [-1, -1]],  #
+        [[0, 1], [-1, -1]],  # a
+        [[0, 2], [-1, -1]],  # b
+        [[1, 2], [-1, -1]],  # ab
+        [[1, 3], [-1, -1]],  # c
+        [[0, 3], [-1, -1]],  # ca
+        [[1, 3], [0, 2]],  # cb
+        [[2, 3], [-1, -1]],  # cab
+        [[2, 3], [-1, -1]],  # d
+        [[2, 3], [0, 1]],  # da
+        [[0, 3], [-1, -1]],  # db
+        [[1, 3], [-1, -1]],  # dab
+        [[1, 2], [-1, -1]],  # dc
+        [[0, 2], [-1, -1]],  # dca
+        [[0, 1], [-1, -1]],  # dcb
+        [[-1, -1], [-1, -1]],  # dcab
+    ],
+    np.int32)
+et = ti.Vector.field(2, int, _et.shape[:2])
+et.from_numpy(_et)
+edge = ti.Struct.field({
+    "begin_point": ti.types.vector(2, ti.f32),
+    "end_point": ti.types.vector(2, ti.f32)
+}, shape=diff_n_grid ** 2)
+edge_num = ti.field(int, shape=())
+diff_dx = 1 / diff_n_grid
+diff_inv_dx = 1 / diff_dx
+radius = diff_dx
 
 
 # 将x复制给y
@@ -119,10 +144,10 @@ def grid_operator():
         if nodes[i, j].node_m > 0:  # No need for epsilon here
             nodes[i, j].node_v = (1 / nodes[i, j].node_m) * nodes[i, j].node_v  # Momentum to velocity
             nodes[i, j].node_v[1] -= dt * 50  # gravity
-            if i < 3 and nodes[i, j].node_v[0] < 0:          nodes[i, j].node_v[0] = 0  # Boundary conditions
-            if i > n_grid - 3 and nodes[i, j].node_v[0] > 0: nodes[i, j].node_v[0] = 0
-            if j < 3 and nodes[i, j].node_v[1] < 0:          nodes[i, j].node_v[1] = 0
-            if j > n_grid - 3 and nodes[i, j].node_v[1] > 0: nodes[i, j].node_v[1] = 0
+            if i < 5 and nodes[i, j].node_v[0] < 0:          nodes[i, j].node_v[0] = 0  # Boundary conditions
+            if i > n_grid - 5 and nodes[i, j].node_v[0] > 0: nodes[i, j].node_v[0] = 0
+            if j < 5 and nodes[i, j].node_v[1] < 0:          nodes[i, j].node_v[1] = 0
+            if j > n_grid - 5 and nodes[i, j].node_v[1] > 0: nodes[i, j].node_v[1] = 0
 
 
 @ti.kernel
@@ -189,67 +214,97 @@ def initialize():
     # create_particle_num[None] += 2000
 
 
+# 生成level set隐式曲面
 @ti.kernel
-def init():
+def gen_level_set():
+    for i, j in ti.ndrange(diff_n_grid, diff_n_grid):
+        min_dis = 10.0
+        node_pos = ti.Vector([i * diff_dx, j * diff_dx])
+        for I in range(particles.pos.shape[0]):
+            distance = (particles.pos[I] - node_pos).norm() - radius
+            if distance < min_dis:
+                min_dis = distance
+        sign_distance_field[i, j] = min_dis
+
+
+# 双线性差值函数
+@ti.kernel
+def bilinear_difference(pos: ti.template(), value: ti.template()):
     for I in ti.grouped(pos):
-        pos[I] = ti.Vector([ti.random(), ti.random()])
+        base = (pos[I] * diff_inv_dx).cast(int)
+        fx = pos[I] * diff_inv_dx - base.cast(float)
+        w = [(1 - fx) * diff_dx, fx * diff_dx]
+        new_value = .0
+        for i, j in ti.static(ti.ndrange(2, 2)):
+            offset = ti.Vector([i, j])
+            weight = w[i][0] * w[j][1] * diff_inv_dx * diff_inv_dx
+            new_value += sign_distance_field[base + offset] * weight
+        value[I] = new_value
+
+
+@ti.func
+def ti_vector(x, y):
+    return ti.Vector([x, y])
+
+
+@ti.func
+def gen_edge_pos(i, j, e):
+    a = sign_distance_field[i, j]
+    b = sign_distance_field[i + 1, j]
+    c = sign_distance_field[i, j + 1]
+    d = sign_distance_field[i + 1, j + 1]
+    base_grid_pos = diff_dx * ti.Vector([i, j])
+    result_pos = ti.Vector([.0, .0])
+    if e == 0:
+        result_pos = base_grid_pos + ti.Vector([(abs(a) / (abs(a) + abs(b))) * diff_dx, 0])
+    if e == 1:
+        result_pos = base_grid_pos + ti.Vector([0, (abs(a) / (abs(a) + abs(c))) * diff_dx])
+    if e == 2:
+        result_pos = base_grid_pos + ti.Vector([diff_dx, (abs(b) / (abs(b) + abs(d))) * diff_dx])
+    if e == 3:
+        result_pos = base_grid_pos + ti.Vector([(abs(c) / (abs(c) + abs(d))) * diff_dx, diff_dx])
+    return result_pos
+
+
+# 将隐式曲面通过marching cube转化为显示曲面
+@ti.kernel
+def implicit_to_explicit():
+    for i, j in ti.ndrange(diff_n_grid - 1, diff_n_grid - 1):
+        id = 0
+        if sign_distance_field[i, j] > 0: id |= 1
+        if sign_distance_field[i + 1, j] > 0: id |= 2
+        if sign_distance_field[i, j + 1] > 0: id |= 4
+        if sign_distance_field[i + 1, j + 1] > 0: id |= 8
+        for k in ti.static(range(2)):
+            if et[id, k][0] != -1:
+                n = ti.atomic_add(edge_num[None], 1)
+                edge[n].begin_point = gen_edge_pos(i, j, et[id, k][0])
+                edge[n].end_point = gen_edge_pos(i, j, et[id, k][1])
 
 
 def main():
     initialize()
-    init()
-    value.fill(.0)
-
-    level_set = LevelSet(diff_n_grid=diff_n_grid,
-                         particle_pos=particles.pos,
-                         sign_distance_field=sign_distance_field)
-    # 生成符号距离场
-    level_set.gen_level_set()
-    level_set.bilinear_difference(pos, value)
-
 
     gui = ti.GUI('Surface Tension', res=512, background_color=0x112F41)
 
-    # differential_solver = Differential(
-    #     n_grid=diff_n_grid,
-    #     min_x=min_x,
-    #     max_x=max_x,
-    #     field=v,
-    #     dim=dim,
-    #     gradient=gradient,
-    #     divergence=divergence,
-    #     laplacian=laplacian)
-    # init()
-    # differential_solver.central_difference()
-    # copy_array(differential_solver.gradient, gradient)
-    # differential_solver.central_divergence()
-    # copy_array(differential_solver.divergence, divergence)
-    # differential_solver.central_laplacian()
-    # copy_array(differential_solver.laplacian, laplacian
-
     while gui.running:
-        # for s in range(int(2e-3 // dt)):
-        #     reset_nodes()
-        #     P2G()
-        #     grid_operator()
-        #     G2P()
+        for s in range(int(2e-3 // dt) * 2):
+            reset_nodes()
+            P2G()
+            grid_operator()
+            G2P()
+        gen_level_set()
+        implicit_to_explicit()
+        begin_point = edge.begin_point.to_numpy()[:edge_num[None]]
+        end_point = edge.end_point.to_numpy()[:edge_num[None]]
+
         colors = np.array([0x068587, 0xED553B, 0xEEEEF0], dtype=np.uint32)
         # gui.circles(particles.pos.to_numpy(), radius=1.5, color=colors[particles.material.to_numpy()])
+
+        gui.lines(begin_point, end_point, color=0xff66cc, radius=1.5)
+        edge_num[None] = 0
+        # gui.show(f'{gui.frame:06d}.png')
         gui.show()  # Change to gui.show(f'{frame:06d}.png') to write images to disk
-
-        for i in range(diff_n_grid):
-            gui.circles(grid_pos.to_numpy()[i], color=0xff66cc, radius=1.5)
-            for j in range(diff_n_grid):
-                gui.text(str(sign_distance_field.to_numpy()[i][j])[0: 5], grid_pos.to_numpy()[i][j], 10, color=0xffffff)
-
-        gui.circles(pos.to_numpy(), color=0xffffff, radius=1.8)
-        for i in range(10):
-            gui.text(str(value[i])[0: 7], pos.to_numpy()[i], 12, 0xffffff)
-    #             # x = str(round(gradient.to_numpy()[i][j][0], 3))
-    #             # y = str(round(gradient.to_numpy()[i][j][1], 3))
-    #             # s = x + "+" + y
-    #             # gui.text(s,grid_pos.to_numpy()[i][j], 8, color=0xffffff)
-    #     gui.show()
 
 
 if __name__ == '__main__':

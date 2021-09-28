@@ -25,7 +25,6 @@ class Differential:
         self.divergence = divergence
         self.laplacian = laplacian
         # 球星level set 的半径
-        self.radius = self.dx * 0.5
     @ti.func
     def ti_vector2(self, u, v):
         return ti.Vector([u, v])
