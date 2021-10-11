@@ -1,7 +1,6 @@
 import taichi as ti
 import numpy as np
 
-
 ti.init(arch=ti.gpu)
 
 PI = 3.1415926535
@@ -76,22 +75,6 @@ edge_num = ti.field(int, shape=())
 diff_dx = 1 / diff_n_grid
 diff_inv_dx = 1 / diff_dx
 radius = diff_dx
-
-
-# 将x复制给y
-@ti.kernel
-def copy_array(x: ti.template(), y: ti.template()):
-    for I in ti.grouped(x):
-        y[I] = x[I]
-
-
-@ti.func
-def get_random_pos(center_x, center_y, radius):
-    u = ti.sqrt(ti.random()) * radius
-    v = ti.random() * 2 * PI
-    x = center_x + u * ti.cos(v)
-    y = center_y + u * ti.sin(v)
-    return [x, y]
 
 
 @ti.kernel
@@ -185,33 +168,6 @@ def initialize():
 
     for i, j in ti.grouped(grid_pos):
         grid_pos[i, j] = ti.Vector([i / diff_n_grid, j / diff_n_grid])
-    # for i in range(20000):
-    #     # water
-    #     particles[i].pos = [ti.random() * 0.984 + 0.007, ti.random() * 0.13 + 0.007]
-    #     particles[i].material = 0
-    #     particles[i].vel = ti.Vector([0, 0])
-    #     particles[i].F = ti.Matrix([[1, 0], [0, 1]])
-    #     particles[i].mass = p_vol * 1.0
-    # create_particle_num[None] += 20000
-    # for i in range(500):
-    #     n = create_particle_num[None] + i
-    #     particles[n].pos = get_random_pos(0.5, 0.22, 0.04)
-    #     # x[n] = [ti.random() * 0.1 + 0.34+ 0.10, ti.random() * 0.008 + 0.31]
-    #     particles[n].material = 1
-    #     particles[n].vel = ti.Vector([0, 0])
-    #     particles[n].F = ti.Matrix([[1, 0], [0, 1]])
-    #     particles[n].mass = p_vol * 2.0
-    # create_particle_num[None] += 500
-    # for i in range(2000):
-    #     n = create_particle_num[None] + i
-    #     # mass_dx = 0.967 / 700
-    #     particles[n].material = 2
-    #     # x[n] = [i * mass_dx, 0.21]
-    #     particles[n].pos = [ti.random() * 0.984 + 0.007, ti.random() * 0.0012 + 0.137]
-    #     particles[n].vel = ti.Vector([0, 0])
-    #     particles[n].F = ti.Matrix([[1, 0], [0, 1]])
-    #     particles[n].mass = p_vol * 1.0
-    # create_particle_num[None] += 2000
 
 
 # 生成level set隐式曲面
@@ -225,21 +181,6 @@ def gen_level_set():
             if distance < min_dis:
                 min_dis = distance
         sign_distance_field[i, j] = min_dis
-
-
-# 双线性差值函数
-@ti.kernel
-def bilinear_difference(pos: ti.template(), value: ti.template()):
-    for I in ti.grouped(pos):
-        base = (pos[I] * diff_inv_dx).cast(int)
-        fx = pos[I] * diff_inv_dx - base.cast(float)
-        w = [(1 - fx) * diff_dx, fx * diff_dx]
-        new_value = .0
-        for i, j in ti.static(ti.ndrange(2, 2)):
-            offset = ti.Vector([i, j])
-            weight = w[i][0] * w[j][1] * diff_inv_dx * diff_inv_dx
-            new_value += sign_distance_field[base + offset] * weight
-        value[I] = new_value
 
 
 @ti.func
