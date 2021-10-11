@@ -10,7 +10,7 @@
 
 ## 成功效果展示
 
-https://forum.taichi.graphics/uploads/default/original/1X/e163379e1f66d011148ea35f7bcc2463b985b7b0.gif
+![e163379e1f66d011148ea35f7bcc2463b985b7b0](C:\Users\wf\Desktop\e163379e1f66d011148ea35f7bcc2463b985b7b0.gif)
 
 ## 整体结构（Optional）
 
